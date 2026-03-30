@@ -19,7 +19,7 @@ DEVICE = "cpu"
 os.makedirs("models", exist_ok=True)
 
 DENSENET_PATH = "models/best_densenet_btxrd.pth"
-UNET_PATH = "models/__improved_best_unet_segmentation.h5"
+UNET_PATH = "models/best_unet_btxrd.h5"
 
 # ✅ FIXED LINKS
 DENSENET_URL = "https://drive.google.com/uc?id=1gGNsPyeDb-oLQ0K14HFNYpWW4auohWzg"
