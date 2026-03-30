@@ -12,7 +12,6 @@ import gdown
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 IMG_SIZE = 224
-THRESHOLD = 0.001
 DEVICE = "cpu"
 
 # ================= DOWNLOAD MODELS =================
@@ -21,17 +20,16 @@ os.makedirs("models", exist_ok=True)
 DENSENET_PATH = "models/best_densenet_btxrd.pth"
 UNET_PATH = "models/best_unet_btxrd.h5"
 
-# ✅ FIXED LINKS
 DENSENET_URL = "https://drive.google.com/uc?id=1gGNsPyeDb-oLQ0K14HFNYpWW4auohWzg"
 UNET_URL = "https://drive.google.com/uc?id=1cKucZBoFr5sL6VQoc3YawSri69nvwuPp"
 
 if not os.path.exists(DENSENET_PATH):
     st.write("Downloading DenseNet model...")
-    gdown.download(DENSENET_URL, DENSENET_PATH, quiet=False)
+    gdown.download(DENSENET_URL, DENSENET_PATH, quiet=False, fuzzy=True)
 
 if not os.path.exists(UNET_PATH):
     st.write("Downloading U-Net model...")
-    gdown.download(UNET_URL, UNET_PATH, quiet=False)
+    gdown.download(UNET_URL, UNET_PATH, quiet=False, fuzzy=True)
 
 # ================= LOAD MODELS =================
 @st.cache_resource
@@ -70,6 +68,7 @@ def classify_image(image):
 def segment_image(image):
     img = np.array(image)
 
+    # Convert to RGB if needed
     if len(img.shape) == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
     elif img.shape[2] == 4:
@@ -78,21 +77,45 @@ def segment_image(image):
     img_resized = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
     input_arr = np.expand_dims(img_resized / 255.0, axis=0)
 
+    # Predict mask
     pred_mask = model_unet.predict(input_arr)[0].squeeze()
-    pred_mask_bin = (pred_mask > THRESHOLD).astype(np.uint8)
 
+    # 🔥 Better threshold
+    pred_mask_bin = (pred_mask > 0.2).astype(np.uint8)
+
+    # 🔥 Remove noise
+    kernel = np.ones((3, 3), np.uint8)
+    pred_mask_bin = cv2.morphologyEx(pred_mask_bin, cv2.MORPH_OPEN, kernel)
+    pred_mask_bin = cv2.morphologyEx(pred_mask_bin, cv2.MORPH_DILATE, kernel)
+
+    # 🔥 Keep only large regions
+    contours, _ = cv2.findContours(pred_mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    clean_mask = np.zeros_like(pred_mask_bin)
+
+    for cnt in contours:
+        if cv2.contourArea(cnt) > 50:
+            cv2.drawContours(clean_mask, [cnt], -1, 1, -1)
+
+    # 🔥 Overlay
     overlay = img_resized.copy()
-    overlay[pred_mask_bin > 0] = [255, 0, 0]
+    overlay[clean_mask > 0] = [255, 0, 0]
 
     result = cv2.addWeighted(img_resized, 0.7, overlay, 0.3, 0)
 
-    return result
+    # 🔥 Draw bounding boxes
+    for cnt in contours:
+        if cv2.contourArea(cnt) > 50:
+            x, y, w, h = cv2.boundingRect(cnt)
+            cv2.rectangle(result, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    return result, pred_mask
 
 # ================= UI =================
 st.set_page_config(page_title="Bone Tumor Detection", layout="wide")
 
 st.title("🦴 Bone Tumor Detection & Segmentation")
-st.write("DenseNet + U-Net")
+st.write("DenseNet + U-Net (Improved Segmentation)")
 
 uploaded_file = st.file_uploader("Upload X-ray", type=["png", "jpg", "jpeg"])
 
@@ -115,5 +138,9 @@ if uploaded_file is not None:
                 st.error("⚠️ Tumor Detected")
                 st.metric("Confidence", f"{prob:.4f}")
 
-                result = segment_image(image)
+                result, heatmap = segment_image(image)
+
                 st.image(result, caption="Tumor Segmentation", use_container_width=True)
+
+                # 🔥 Debug heatmap
+                st.image(heatmap, caption="Raw Model Output (Heatmap)")
