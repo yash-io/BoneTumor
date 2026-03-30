@@ -12,6 +12,7 @@ import gdown
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 IMG_SIZE = 224
+THRESHOLD = 0.001
 DEVICE = "cpu"
 
 # ================= DOWNLOAD MODELS =================
@@ -20,16 +21,8 @@ os.makedirs("models", exist_ok=True)
 DENSENET_PATH = "models/best_densenet_btxrd.pth"
 UNET_PATH = "models/best_unet_btxrd.h5"
 
-DENSENET_URL = "https://drive.google.com/uc?id=1gGNsPyeDb-oLQ0K14HFNYpWW4auohWzg"
-UNET_URL = "https://drive.google.com/uc?id=1cKucZBoFr5sL6VQoc3YawSri69nvwuPp"
-
-if not os.path.exists(DENSENET_PATH):
-    st.write("Downloading DenseNet model...")
-    gdown.download(DENSENET_URL, DENSENET_PATH, quiet=False, fuzzy=True)
-
-if not os.path.exists(UNET_PATH):
-    st.write("Downloading U-Net model...")
-    gdown.download(UNET_URL, UNET_PATH, quiet=False, fuzzy=True)
+gdown.download("https://drive.google.com/uc?id=1gGNsPyeDb-oLQ0K14HFNYpWW4auohWzg", DENSENET_PATH, quiet=True, fuzzy=True)
+gdown.download("https://drive.google.com/uc?id=1cKucZBoFr5sL6VQoc3YawSri69nvwuPp", UNET_PATH, quiet=True, fuzzy=True)
 
 # ================= LOAD MODELS =================
 @st.cache_resource
@@ -47,100 +40,91 @@ def load_models():
 
 model_dense, model_unet = load_models()
 
-# ================= TRANSFORMS =================
-dense_transform = transforms.Compose([
+# ================= PREPROCESS (SAME AS HIS) =================
+def preprocess_image(image):
+    img_array = np.array(image)
+
+    if len(img_array.shape) == 2:
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
+    elif img_array.shape[2] == 4:
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
+
+    img_pil = Image.fromarray(img_array)
+    img_rgb = img_pil.convert("RGB").resize((IMG_SIZE, IMG_SIZE))
+
+    img_arr = np.array(img_rgb) / 255.0
+    input_arr = np.expand_dims(img_arr, axis=0)
+
+    return input_arr, img_rgb
+
+# ================= CLASSIFICATION =================
+transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor()
 ])
 
-# ================= CLASSIFICATION =================
-def classify_image(image):
+def classify(image):
     img = image.convert("RGB").resize((224, 224))
-    img = dense_transform(img).unsqueeze(0)
+    img = transform(img).unsqueeze(0)
 
     with torch.no_grad():
-        output = model_dense(img)
-        probs = torch.softmax(output, dim=1)[0]
+        out = model_dense(img)
+        prob = torch.softmax(out, dim=1)[0][1].item()
 
-    return float(probs[1])
+    return prob
 
-# ================= SEGMENTATION =================
-def segment_image(image):
-    img = np.array(image)
+# ================= SEGMENTATION (HIS EXACT STYLE) =================
+def segment(image):
+    input_arr, img_rgb = preprocess_image(image)
 
-    # Convert to RGB if needed
-    if len(img.shape) == 2:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-    elif img.shape[2] == 4:
-        img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
-
-    img_resized = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-    input_arr = np.expand_dims(img_resized / 255.0, axis=0)
-
-    # Predict mask
     pred_mask = model_unet.predict(input_arr)[0].squeeze()
+    pred_mask_bin = (pred_mask > THRESHOLD).astype(np.uint8)
 
-    # 🔥 Better threshold
-    pred_mask_bin = (pred_mask > 0.2).astype(np.uint8)
+    # contours
+    pred_mask_uint8 = (pred_mask_bin * 255).astype(np.uint8)
+    contours, _ = cv2.findContours(pred_mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # 🔥 Remove noise
-    kernel = np.ones((3, 3), np.uint8)
-    pred_mask_bin = cv2.morphologyEx(pred_mask_bin, cv2.MORPH_OPEN, kernel)
-    pred_mask_bin = cv2.morphologyEx(pred_mask_bin, cv2.MORPH_DILATE, kernel)
+    # filter small noise (HIS logic)
+    contours = [cnt for cnt in contours if cv2.contourArea(cnt) > 10]
 
-    # 🔥 Keep only large regions
-    contours, _ = cv2.findContours(pred_mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    clean_mask = np.zeros_like(pred_mask_bin)
+    img_viz = np.array(img_rgb).copy()
 
     for cnt in contours:
-        if cv2.contourArea(cnt) > 50:
-            cv2.drawContours(clean_mask, [cnt], -1, 1, -1)
+        # red contour
+        cv2.drawContours(img_viz, [cnt], -1, (255, 0, 0), 2)
 
-    # 🔥 Overlay
-    overlay = img_resized.copy()
-    overlay[clean_mask > 0] = [255, 0, 0]
+        # green box
+        x, y, w, h = cv2.boundingRect(cnt)
+        cv2.rectangle(img_viz, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-    result = cv2.addWeighted(img_resized, 0.7, overlay, 0.3, 0)
-
-    # 🔥 Draw bounding boxes
-    for cnt in contours:
-        if cv2.contourArea(cnt) > 50:
-            x, y, w, h = cv2.boundingRect(cnt)
-            cv2.rectangle(result, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-    return result, pred_mask
+    return img_viz, pred_mask, len(contours)
 
 # ================= UI =================
-st.set_page_config(page_title="Bone Tumor Detection", layout="wide")
+st.title("🦴 Bone Tumor Detection (Fixed)")
 
-st.title("🦴 Bone Tumor Detection & Segmentation")
-st.write("DenseNet + U-Net (Improved Segmentation)")
+file = st.file_uploader("Upload X-ray", type=["png","jpg","jpeg"])
 
-uploaded_file = st.file_uploader("Upload X-ray", type=["png", "jpg", "jpeg"])
-
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
+if file:
+    image = Image.open(file)
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.image(image, caption="Original Image", use_container_width=True)
+        st.image(image, caption="Original")
 
     with col2:
         with st.spinner("Analyzing..."):
-            prob = classify_image(image)
+            prob = classify(image)
 
             if prob < 0.5:
-                st.success("✅ No Tumor Detected")
-                st.metric("Confidence", f"{1 - prob:.4f}")
+                st.success("✅ Normal")
+                st.write(f"Confidence: {1-prob:.3f}")
+
             else:
                 st.error("⚠️ Tumor Detected")
-                st.metric("Confidence", f"{prob:.4f}")
+                st.write(f"Confidence: {prob:.3f}")
 
-                result, heatmap = segment_image(image)
+                result, heatmap, count = segment(image)
 
-                st.image(result, caption="Tumor Segmentation", use_container_width=True)
-
-                # 🔥 Debug heatmap
-                st.image(heatmap, caption="Raw Model Output (Heatmap)")
+                st.image(result, caption=f"Detected Regions: {count}")
+                st.image(heatmap, caption="Heatmap")
