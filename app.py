@@ -21,8 +21,8 @@ os.makedirs("models", exist_ok=True)
 DENSENET_PATH = "models/best_densenet_btxrd.pth"
 UNET_PATH = "models/best_unet_btxrd.h5"
 
-gdown.download("https://drive.google.com/uc?id=1gGNsPyeDb-oLQ0K14HFNYpWW4auohWzg", DENSENET_PATH, quiet=True, fuzzy=True)
-gdown.download("https://drive.google.com/uc?id=1cKucZBoFr5sL6VQoc3YawSri69nvwuPp", UNET_PATH, quiet=True, fuzzy=True)
+# gdown.download("https://drive.google.com/uc?id=1gGNsPyeDb-oLQ0K14HFNYpWW4auohWzg", DENSENET_PATH, quiet=True, fuzzy=True)
+# gdown.download("https://drive.google.com/uc?id=1cKucZBoFr5sL6VQoc3YawSri69nvwuPp", UNET_PATH, quiet=True, fuzzy=True)
 
 # ================= LOAD MODELS =================
 @st.cache_resource
